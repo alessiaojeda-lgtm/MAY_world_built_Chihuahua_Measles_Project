@@ -1,0 +1,427 @@
+# The Chihuahua build (§3.10)
+
+Every other document in this folder validates against the **Aguascalientes**
+test world: `configs/Mexico_2020/config.yaml` filtered to `MGU` code `MX01`,
+11 municipios, 1,425,607 people. [README.md](README.md) is explicit about
+what that buys and what it costs: Aguascalientes is "urban, industrial and
+comparatively wealthy," and understates the national informality gap by
+roughly half. This document is the first build against a second state —
+**Chihuahua**, `MX08`, 67 municipios — run to find out whether that warning
+holds up against real evidence rather than an extrapolation from national
+census tables.
+
+**The config filter is state, not fixed.** At the time of this run,
+`configs/Mexico_2020/config.yaml` read:
+
+```yaml
+filter:
+  level: MGU
+  codes: ["MX08"]   # Chihuahua (67 municipios)
+```
+
+Every Aguascalientes figure quoted elsewhere in this folder was produced with
+that same file set to `["MX01"]`. The two builds are not simultaneous outputs
+of one run; they are two runs of the same pipeline against the same config
+path at different filter settings. Anyone re-running either build should
+check the filter before comparing new numbers against either set of figures
+here.
+
+## 1. Run
+
+```
+python3 create_world.py --config configs/Mexico_2020/config.yaml
+```
+
+Output: `output/Mexico_2020_Chihuahua/` — `world_state.h5`, `build_profile.json`
+(complete, machine-readable timing/memory trace of every stage), plus two
+person-level debug CSVs (`work_assignment_debug.csv`,
+`commute_mode_debug.csv`) that a smaller Aguascalientes-scale run does not
+need to produce separately to be readable by hand.
+
+| | |
+|---|---|
+| Python | 3.13.14 |
+| Platform | Windows-11-10.0.26200-SP0 |
+| Wall clock | 1,289.7 s (21.5 min) |
+| RSS at start | 150.6 MB |
+| **RSS peak** | **17,928 MB (17.9 GB)** |
+| Exit | 0 (complete) |
+
+The peak-memory figure is the headline scaling fact: a single-municipio
+Aguascalientes build has never required anywhere near this. 67 municipios and
+3.7M people is roughly 2.6x Aguascalientes' population, but the memory cost
+is not linear in population alone — venue and household object counts drive
+it too, and both scale with municipios as much as with people.
+
+## 2. Stage-by-stage
+
+| stage | wall (s) | share of total |
+|---|---:|---:|
+| geography_load | 0.03 | 0.0% |
+| venues_load | 12.08 | 0.9% |
+| population_load | 7.61 | 0.6% |
+| **residence_allocation** (23 household-pattern sub-steps) | **876.57** | **68.0%** |
+| attribute:ethnicity_assignment | 13.96 | 1.1% |
+| attribute:activity_status_assignment | 19.93 | 1.5% |
+| attribute:school_location_assignment | 7.32 | 0.6% |
+| attribute:workplace_assignment | 9.65 | 0.7% |
+| attribute:work_sector_assignment | 19.23 | 1.5% |
+| distributor:university_distributor | 10.67 | 0.8% |
+| distributor:specific_workplace_university_staff_distributor | 11.92 | 0.9% |
+| distributor:school_distributor | 12.86 | 1.0% |
+| child_creator:school_classrooms | 2.42 | 0.2% |
+| distributor:specific_workplace_classrooms_distributor | 10.23 | 0.8% |
+| distributor:residency_distributor | 12.78 | 1.0% |
+| distributor:social_assistance_distributor | 12.60 | 1.0% |
+| distributor:company_distributor | 16.52 | 1.3% |
+| distributor:student_job_distributor | 13.16 | 1.0% |
+| distributor:hospital_distributor | 19.80 | 1.5% |
+| distributor:clinic_distributor | 18.96 | 1.5% |
+| child_creator:company_offices | 3.39 | 0.3% |
+| distributor:multi_venue_distributor (leisure) | 59.56 | 4.6% |
+| hdf5_export | 95.33 | 7.4% |
+
+Residence allocation is not a rounding cost, it is two-thirds of the build.
+Within it, the single largest sub-step is "Families with adult parents (2+
+adults)" at 340.5 s alone — over a third of the entire build's wall time in
+one household pattern. Every other stage individually costs under 8% of
+total time; `hdf5_export` (95.3 s) is the only other double-digit-second
+stage, consistent with writing a state-sized HDF5 file rather than a
+single-municipio one.
+
+## 3. Scale reached
+
+```
+geo_units      68   (67 SGU municipios + 1 MGU entidad)
+people          3,741,869
+venues (raw)      185,920   (loaded from source CSVs, before households/offices/classrooms)
+venues (final)  1,500,302   (after household creation, school_classrooms, company_offices)
+```
+
+Raw venue mix, all sourced venue types loaded for Chihuahua alone:
+
+```
+company    157,152   restaurant   11,175   school      6,558   clinic    4,615
+mall           406   social_assist 1,285   gym            893   cafe      1,359
+bar            833   leisure         913   university     314   hospital    191
+residency      196   cinema           30
+```
+
+## 4. Households: validated against an independent official total
+
+`households/households.csv` — the file `source/scrape_hogcen.py` builds from
+the reverse-engineered SSAS/OLAP cube documented in [the access-problem
+finding](README.md#the-access-problem-is-a-finding-not-a-footnote) — is not
+the only thing this pipeline holds for household counts. A companion file,
+`source/totales_oficiales_municipio.csv`, carries an independently-sourced
+official household total per municipio, used at build time as a check on the
+joint distribution the OLAP cube reconstructs.
+
+```
+Chihuahua official total (totales_oficiales_municipio.csv, summed): 1,146,395
+Chihuahua households built (this run):                              1,144,076
+Coverage:                                                              99.80%
+```
+
+This is the strongest available evidence that the household composition
+cube's 2020 pin is holding for at least one state: the built household count
+lands within 0.2% of an independently-sourced official total, which is not
+something the vintage of an undocumented endpoint would produce by accident
+if it had silently drifted to a later census cycle. It does not settle the
+open question raised in the access-problem finding — a household *count*
+matching does not prove every household's *composition* is vintage-correct —
+but it is real, positive evidence where none existed before.
+
+## 5. Attribute coverage
+
+Population-wide coverage (fraction of all 3,741,869 people carrying the
+property), from `build_profile.json`'s final stage:
+
+| property | coverage |
+|---|---:|
+| residence.household | 100.00% |
+| ethnicity | 100.00% |
+| cohabiting_couple | 33.16% |
+| activity_status | 95.41% |
+| work_mode / workplace_location | 43.12% |
+| work_sector | 43.12% |
+| school_location / study_mode | 26.39% |
+
+**`ethnicity`'s 100% is an assignment coverage figure, not an export one.**
+This run predates two fixes to `serialization_config.yaml` documented in
+[README.md](README.md)'s "Engine foot-guns" section: every person here was
+correctly assigned an ethnicity, but `population.properties` did not name
+`ethnicity`, so `world_state.h5` for this specific build does not carry it.
+Anything reading `ethnicity` from this run's `.h5` file will find it absent
+despite this table showing full coverage — the two facts are both true and
+describe different stages of the pipeline.
+
+The venue side of this run has the same gap, for the same reason. `hospital`,
+`clinic`, `residency` and `social_assistance` venues in this run's
+`world_state.h5` carry their identity, geography and coordinates — S3's raw
+venue counts for these four types are real and correctly loaded — but no
+`industry_code` or `sizeband`, because `serialization_config.yaml` had no
+`types:` block for them at build time either. Anyone querying this
+specific `world_state.h5` for, say, orphanages versus elder-care residencies
+will find every `residency` venue identical on every exported property. Both
+gaps are fixed in the current config; neither is fixed in this run's output.
+
+**A third, more serious issue affects this run's data itself, not just its
+export.** `company_offices.yaml` had no `exclude_subset_keys`, and the engine
+bug it was masking (see [README.md](README.md)'s "Engine foot-guns", seventh
+entry) means every `student_employee` who got a part-time job at a company
+with full-time staff had their `primary_activity` silently overwritten with
+that company's office. Checked directly against this run's `world_state.h5`:
+of 69,238 `student_employee` people, 69,061 (99.7%) have `primary_activity`
+pointing at an `office` rather than a school, university, or classroom. This
+is not an export gap like the two above — the underlying simulated placement
+is wrong, not merely unexported, and it is **not** fixable by re-reading this
+`world_state.h5` differently. It requires a rerun with the fixed engine and
+config.
+
+`activity_status` at 95.41% (not 100%) is the drop-unspecified mechanism
+working as designed — the same [no-invented-values
+commitment](README.md#no-invented-values-one-commitment-stated-once)
+documented for the national build, operating here on Chihuahua's own share of
+`CONACT`/`ASISTEN` non-answers. None of Chihuahua's 67 municipios are among
+the five the sources disagree about (README.md's cross-source table), so this
+gap is ordinary person-level dropping, not a municipio going dark the way
+Seybaplaya or Honduras de la Sierra do.
+
+`work_sector`/`workplace_location` and `school_location`/`study_mode` sit
+well under 100% because they are conditional: only people `activity_status`
+places into a working or studying state receive them. These are not
+placement-failure rates — see S6 for the actual company-placement rate,
+which is a different, smaller, eligible-conditional number.
+
+## 6. Company placement: the headline number needs decomposing before it means anything
+
+`work_assignment_debug.csv` — 1,624,757 rows, one per person carrying
+`work_sector` — gives a diagnostic the Aguascalientes-scale docs never
+needed a dedicated file for. The naive top-line number:
+
+```
+Workers with work_sector          1,624,757
+  already placed in a specific venue (school/university/residency/
+  social_assistance, before reaching company_distributor)     29,851
+  no fixed desk (work_mode = From_Home)                      141,385
+  company-eligible                                          1,453,521
+
+Placed in a company        947,744 / 1,453,521   (65.2%)
+Unplaced                    505,777 / 1,453,521   (34.8%)
+```
+
+**Correction: these raw numbers are themselves contaminated by the
+`company_offices` bug documented in [README.md](README.md)'s "Engine
+foot-guns," seventh entry, and are wrong as published.**
+`export_work_assignment_debug` (`may/utils/debug_output.py`) determines
+`placed_in_company` by reading each person's `primary_activity` and checking
+whether it resolves to an `office` venue with subset `"worker"`. That is
+exactly the field the bug corrupted: every `student_employee` whose school
+placement was overwritten with an office now reads as `placed_in_company:
+True` in this diagnostic, regardless of what their real primary activity
+was. Checked directly: of the 1,453,521 company-eligible rows, 63,667 are
+`student_employee` people, and 63,512 of those were marked placed —
+inflating the placed count and understating the true shortfall. Corrected
+by excluding `student_employee` PersonIDs (identified from
+`population/properties/activity_status`) from the placed count entirely,
+since none of them belong in a company-placement denominator to begin with
+(their real workplace question, if any, is `part_time_work`, which this
+diagnostic does not measure):
+
+```
+Placed in a company (corrected)    884,232 / 1,453,521   (60.8%)
+Unplaced (corrected)               569,289 / 1,453,521   (39.2%)
+```
+
+The sector breakdown below uses the corrected figures throughout, not the
+raw ones — `work_assignment_debug.csv` carries `work_sector` per row, so
+the same PersonID-level correction applies cell by cell:
+
+| sector | eligible | placed (corrected) | unplaced (corrected) | unplaced % |
+|---|---:|---:|---:|---:|
+| 62 Servicios de salud y asistencia social | 55,387 | 0 | 55,387 | **100.0%** |
+| 21 Minería | 12,898 | 2,340 | 10,558 | 81.9% |
+| 23 Construcción | 95,674 | 21,450 | 74,224 | 77.6% |
+| 61 Servicios educativos | 50,099 | 17,836 | 32,263 | 64.4% |
+| 54 Servicios profesionales, científicos y técnicos | 39,499 | 20,666 | 18,833 | 47.7% |
+| 51 Información en medios masivos | 12,986 | 6,761 | 6,225 | 47.9% |
+| 11 Agricultura, cría, forestal, pesca y caza | 92,893 | 50,064 | 42,829 | 46.1% |
+| 48-49 Transportes, correos y almacenamiento | 56,032 | 33,542 | 22,490 | 40.1% |
+| 22 Electricidad, agua y gas | 6,597 | 4,398 | 2,199 | 33.3% |
+| 71 Esparcimiento cultural y deportivo | 12,733 | 8,639 | 4,094 | 32.2% |
+| 31-33 Industrias manufactureras | 436,198 | 294,251 | 141,947 | 32.5% |
+| 56 Servicios de apoyo a los negocios | 46,854 | 32,678 | 14,176 | 30.3% |
+| 55 Corporativos | 359 | 251 | 108 | 30.1% |
+| 93 Actividades gubernamentales | 50,661 | 36,328 | 14,333 | 28.3% |
+| 43 Comercio al por mayor | 31,789 | 22,779 | 9,010 | 28.3% |
+| 81 Otros servicios | 118,892 | 86,099 | 32,793 | 27.6% |
+| 72 Alojamiento y alimentos | 84,308 | 61,853 | 22,455 | 26.6% |
+| 46 Comercio al por menor | 230,895 | 170,389 | 60,506 | 26.2% |
+| 53 Servicios inmobiliarios | 6,290 | 4,639 | 1,651 | 26.2% |
+| 52 Servicios financieros y de seguros | 12,477 | 9,269 | 3,208 | 25.7% |
+
+**Sector 62 at 100.0% (corrected) is not evidence of a coverage collapse —
+it is a documented, deliberate gap, now visible cleanly instead of masked by
+a second bug.** The raw figure (95.0%, 2,750 apparently placed) turned out to
+be entirely an artifact: every one of those 2,750 was a misclassified
+`student_employee`, not — as an earlier, uncorrected draft of this document
+speculated in conversation but never verified in writing — establishments
+surviving from the four excluded 621xxx auxiliary codes. With the correction
+applied, *zero* sector-62 workers are placed in a company, which is exactly
+what the mechanism below predicts. Sector-62 workers are meant to be placed
+by `residency_distributor.yaml` and `social_assistance_distributor.yaml`,
+which run before `company_distributor` and correctly claim the 623xxx/624xxx
+slice of the sector before it ever reaches this diagnostic's "eligible"
+pool. What is left over is the 621xxx/622xxx slice — clinic and hospital
+staff — and the code says plainly why they show up as unplaced.
+`company_distributor.yaml` had its own "62" matching rule removed to avoid
+double-counting DENUE establishments already split out into
+`hospitals.csv`/`clinics.csv`, and `residency_distributor.yaml` carries the
+consequence in its own comment, verbatim:
+
+> REMAINING GAP: that removal means sector-62 workers who work at a hospital
+> (622xxx) or clinic (621xxx) currently have no employer distributor at all
+> — only the 623xxx (residencia, here) and 624xxx (social assistance) slices
+> are covered. They are correctly reported as unplaced until equivalent
+> distributors are built for hospital/clinic workplaces, mirroring this file.
+
+This is not new information the Chihuahua build discovered — it is a gap the
+codebase already names and dates from before this run. What the Chihuahua
+build supplies that the Aguascalientes-scale docs do not is the **first
+measured size of it**: 55,387 people, 100% of Chihuahua's sector-62
+workforce once the office-bug misclassification is removed, structurally
+unplaceable by the current distributor set. `hospitals.md` S5 and
+`health_social_venues.md` S7 now both carry this measurement in their own
+Limitations sections — previously both discussed `employee_count`'s meaning
+and the deliberate `capacity_handling: ignore` choice for *patients* without
+ever stating that hospital and clinic *staff* have no workplace distributor
+at all. That was a documentation gap this build log surfaced, closed in both
+files rather than left for a future reader to rediscover.
+
+Sector 61 (64.4% unplaced, corrected) is a smaller version of the same
+shape, but partially real rather than purely diagnostic:
+`specific_workplace_classrooms_distributor.yaml`'s own fallback note says a
+teacher who finds no classroom in their workplace municipio "falls through
+to company_distributor, which still matches sector 61 against DENUE
+servicios educativos establishments" — a much smaller pool than actual
+schools. The 32,263 sector-61 people counted unplaced here already failed
+*both* steps, so unlike sector 62 this is a genuine, if partial, placement
+failure rather than a diagnostic artifact.
+
+**Recomputing the headline rate with sectors 61 and 62 set aside** — since
+neither belongs in a company-placement denominator by design —:
+
+```
+eligible' = 1,453,521 - 50,099 - 55,387 =  1,348,035
+placed'   =   884,232 -  17,836 -      0 =    866,396   (corrected)
+unplaced' = eligible' - placed'          =    481,639   (35.7%)
+```
+
+35.7% is well above Aguascalientes' *observed* 12.5% and above the 21.3%
+national *prediction* — construction (77.6%), mining (81.9%), sector 61
+(64.4%, structurally different from the other three — see above), and
+agriculture (46.1%) are the largest contributors, and construction,
+mining and agriculture are sectors [companies.md](companies.md) already
+documents as structurally under-registered in DENUE because the work does
+not happen at a fixed, addressable premises. Chihuahua's economy leans
+further into exactly those sectors than Aguascalientes' does.
+
+**The reconciliation this section originally deferred has since been run,
+in [README.md](README.md)'s Scope section, and the result is itself the
+more interesting finding — more so once the correction above is factored
+in.** The same (municipio × sector) predicted-shortfall calculation
+[companies.md](companies.md) S4 runs for Aguascalientes, rerun specifically
+against Chihuahua's own capacity table, predicts a company-placement
+shortfall of **15.5%** — not 35.7%. Aguascalientes' predicted 12.8% and its
+build's observed 12.5% agree almost exactly; at Chihuahua's scale, predicted
+and observed pull apart by more than a factor of two. Part of the gap is
+explained: `companies.csv` still carries 78,025 of sector-62
+employee-capacity for Chihuahua that no live distributor can route anyone
+to, for the exact reason S6 above documents — zeroing it lifts the
+prediction to 19.3%, still well short of 35.7%. This gap is *wider* than it
+first appeared: an earlier version of this comparison used the uncorrected
+31.5% observed figure, understating it.
+
+**Resolved: 35.7% was itself measuring the wrong denominator, not a real gap
+against the prediction.** `export_work_assignment_debug`
+(`may/utils/debug_output.py`) flagged `company_eligible` for anyone holding a
+`work_sector`, filtering out only people already placed in a specific venue
+and `From_Home`/`Other` work-mode people — with no check on
+`activity_status`. But `company_distributor.yaml`'s own `global_filters`
+require `activity_status == "employee"`: `work_sector_assignment.yaml`
+assigns a sector to `["employee", "own_account", "student_employee",
+"student_own_account"]` alike, so `own_account` and `student_own_account`
+people carry a `work_sector` despite never being candidates for a company
+placement — company_distributor never considers them, because it filters on
+`activity_status` before it filters on anything else. The 63,667
+`student_employee` case above was one instance of this same class of error;
+this section's own correction removed them from the *numerator* (so their
+false placements stopped counting as successes) but left them, and every
+`own_account`/`student_own_account` person, in the *denominator* — still
+counted as eligible, still counted as unplaced, despite never having been
+eligible for company placement in the first place.
+
+Measured directly against this run's `world_state.h5` — real `activity_status`
+per person, real placement via actual company/office subset membership, not
+approximation — of the 1,479,123 people holding a `work_sector` in sectors
+other than 61/62, 355,678 (24%) do not have `activity_status == "employee"`.
+Restricting to `activity_status == "employee"` only:
+
+```
+eligible (employee only, sectors 61/62 excluded)   1,084,762
+placed                                               946,759
+unplaced                                             138,003   (12.7%)
+```
+
+**12.7%, not 35.7%.** That lands almost exactly on the capacity-based
+prediction once the prediction itself is corrected the same way this run's
+capacity was undercounted: the 15.5%/19.3% figures above were computed
+against `companies.csv` alone, but `venues_config.yaml` loads the `company`
+venue type from `companies.csv` **and** `companies_agriculture.csv` stacked
+together (a synthetic supplement — see its own `agro_<geo>_<n>` naming — that
+DENUE structurally excludes; see `company_distributor.yaml`'s fallback
+comment). Recomputing the (municipio × sector) prediction with that capacity
+included, sectors 61/62 excluded, gives **12.0%** for Chihuahua — 0.7
+percentage points from the 12.7% actually observed once the denominator is
+fixed. The two independent routes to this number — a capacity-side
+recalculation using only the source CSVs, and a demand-side recount using
+only the completed build's own `world_state.h5` — agree with each other
+almost exactly, which is the strongest evidence available that neither is a
+coincidence.
+
+The `debug_output.py` fix (`activity_status == "employee"` added to
+`company_eligible`, mirroring `company_distributor.yaml`'s own filter) means
+a fresh run of this diagnostic will report the corrected figure directly;
+`work_assignment_debug.csv` also now carries an `activity_status` column so
+this class of denominator error is visible in the raw data itself, not only
+in a hand-reconciliation like this one. The 15.5%/19.3% predictions above are
+themselves superseded by the companies_agriculture.csv-inclusive recompute
+described here and should not be read as the last word on the capacity side
+either — they are left in place above as the historical record of how this
+section's reasoning developed.
+
+## 7. What this run does not cover
+
+- **Commute mode.** `commute_mode_debug.csv` has one row per person
+  (2,474,712) but every `commute_mode` value is empty — expected, since
+  [README.md](README.md) already documents `commute_mode_assignment` as not
+  built for Mexico (`MED_TRASLADO_TRAB1..3` is the intended source and is not
+  wired in here either). `commute_mode_debug_summary.txt` is consequently
+  empty; this is the diagnostic correctly having nothing to summarize, not a
+  broken script.
+- **School and university placement rates.** Unlike work assignment, no
+  person-level debug CSV was produced for `school_distributor`/
+  `university_distributor` in this run, so this build cannot reproduce
+  [schools.md](schools.md) S4's eligible-vs-placed accounting (99.6% school,
+  80.1% university in Aguascalientes) for Chihuahua. The population-wide
+  `school_location` coverage figure in S5 (26.39%) is not a substitute for
+  that — it is a coverage-of-population rate, not an eligible-conditional
+  placement rate, and the two are not comparable.
+- ~~A closed predicted-vs-observed reconciliation~~ — **resolved, see S6's
+  second update.** The 35.7%/19.3% gap was not a modelling shortfall: 24% of
+  the denominator behind 35.7% were `own_account`/`student_own_account`
+  people who were never `company_distributor`-eligible, and the 15.5%/19.3%
+  predictions themselves undercounted capacity by omitting
+  `companies_agriculture.csv`. Corrected on both sides, observed (12.7%) and
+  predicted (12.0%) agree to within a point.
