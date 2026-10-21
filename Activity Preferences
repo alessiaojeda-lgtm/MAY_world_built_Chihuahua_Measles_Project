@@ -1,0 +1,308 @@
+# Activity status by municipio, sex and age (Mexico 2020)
+
+How `data/Mexico_data/activities/school/MX_activity_status_municipio.csv` is
+produced, and why each decision was taken. Built by
+`data/Mexico_data/source/build_activity_status.py`.
+
+**This supersedes [work_status.md](work_status.md)** and the file it documents.
+That file split the population by work alone, and its own closing section said
+why that was wrong and what should replace it. This is the replacement.
+
+## 1. Why this file exists
+
+`work_status.md` established that Mexico cannot use England's rule — give every
+18-64 adult a workplace — because DENUE structurally cannot host street traders,
+farm labourers or unpaid family workers. It split the population into `employee`
+/ `own_account` / `not_working` and that split still stands; it is reproduced
+here unchanged.
+
+What it could not express is the population under 18. Of 1,292,986 working 12-17
+year olds, **38.6% also attend school**, and the two groups are not variants of
+each other:
+
+| national 12-17 workers | median hours/week | ≤20h |
+|---|---|---|
+| also attending school | **15h** | 69.1% |
+| not attending school | **45h** | 16.6% |
+| adults 18+, for comparison | 48h | 12.2% |
+
+Working students are part-time — 15 hours, two thirds at or under 20. Working
+non-students are at 45 hours against an adult median of 48: they are
+school-leavers doing adult jobs, not part-timers. Half a million children hold
+both a school place and a job; roughly 800,000 more have left school for
+full-time work. Collapsing either into the other misrepresents both, and until a
+school layer existed there was nowhere to put the distinction.
+
+> The medians here are computed with `HORTRA = 999` (not specified, 89,455
+> weighted adults) excluded. `work_status.md` reports 40h and 45h for the latter
+> two rows; those figures do not reproduce and should be read from here.
+
+## 2. The source
+
+**Censo 2020, Cuestionario Ampliado, person records.**
+
+| column | meaning | values |
+|---|---|---|
+| `ASISTEN` (`V344`) | attends school | `1` Sí, `3` No, `9` NE |
+| `CONACT` (`V362`) | condition of activity | employed set is `{10,13,14,15,16,18,20}` |
+| `SITTRA` (`V364`) | position in occupation | `1`..`6`, `9` = not specified |
+| `SEXO`, `EDAD`, `FACTOR` | sex, age, expansion weight | |
+
+`ASISTEN` is asked of everyone **3 and over**; `CONACT` only of those **12 and
+over**. The bands below 12 therefore reach only `student` and `inactive`, which
+is a property of the instrument, not a gap in the table.
+
+`CONACT = 15` is worth noting for what it reveals about the instrument: it means
+the person declared themselves a student and verification recovered that they
+also work. 736,331 people weighted, 692,366 of whom attend school. The census
+went looking for exactly this population.
+
+## 3. Interpretation
+
+### Six states, from crossing two questions
+
+```
+student              attends, does not work
+student_employee     attends AND works at fixed premises      (SITTRA 1, 4)
+student_own_account  attends AND works, not at a registrable one (SITTRA 2,3,5,6)
+employee             works at fixed premises, does not attend
+own_account          works, not at a registrable establishment, does not attend
+inactive             neither attends nor works
+```
+
+The `employee` / `own_account` line is unchanged from `work_status.md`, and the
+reasoning is unchanged with it: `SITTRA 4` (patrón) counts as an employee because
+DENUE's size bands are explicitly "incluyendo al dueño", so excluding owners
+would leave places unfilled; `SITTRA 2/3/5/6` do not, because a jornalero works a
+field and a cuenta propia works a street pitch, neither of which DENUE lists.
+
+### One attribute, not two — because independence is measurably wrong
+
+The alternative was a `school_status` attribute alongside `work_status`. It was
+rejected on the arithmetic. Among 12-17s nationally:
+
+```
+P(student) = 80.7%     P(worker) = 9.9%
+independent draw  ->  8.0% do both  ->  ~1,043,000 student workers
+observed          ->                       498,986
+```
+
+Sampling the two independently produces **twice** the real number of working
+students. Crossing them in one table makes the joint exact by construction.
+
+Conditioning one attribute on the other — keying `school_status` on an
+already-assigned `work_status` — would also work, and the engine supports it
+(`col_type: 'direct'` resolves any person attribute,
+`may/attribute_assignment/data_sources.py:667`). It was rejected because
+`work_status` does not exist below age 12, so every child would present a null
+key, and filters are step-level rather than per-rule, so one config cannot gate
+two rules by age. A single crossed attribute has neither problem and no
+ordering dependency.
+
+### "No especificado" is dropped, and this is not a detail
+
+`SITTRA = 9` is dropped as before — 0.06% of weighted workers (32,426). So are
+`ASISTEN = 9` (177,246, 0.14%) and `CONACT = 99` (340,112, 0.27%). They fall into
+no status and are omitted from `Total`, which renormalises the rest
+proportionally. Carrying a seventh "unknown" status would propagate a measurement
+artefact into every downstream filter.
+
+**This is load-bearing, not hygiene.** "No especificado" means the question was
+asked and not answered. Read naively, it becomes an answer: `CONACT = 99` is not
+in the employed set, so it reads as *does not work*; `ASISTEN = 9` is not `1`, so
+it reads as *does not attend*. The result is a person who is confidently
+`inactive` on the strength of no measurement at all.
+
+In three municipios that is **every resident**:
+
+| municipio | records | CONACT | ASISTEN |
+|---|---|---|---|
+| `MX04012` Seybaplaya | 1,326 (15,299 weighted) | `99` or blank, always | `9` or blank, always |
+| `MX07125` Honduras de la Sierra | 1,274 (11,648 weighted) | `99` or blank, always | `9` or blank, always |
+| `MX29048` La Magdalena Tlaltelulco | — | same | same |
+
+Inferring through it produced three municipios that were **100% inactive** —
+43,590 people with no workers and no students, which is not a place. Dropping the
+unspecified empties them out of the table instead, so a resident misses the
+lookup and stops the build — one of the fifteen instances of [the
+no-invented-values
+commitment](README.md#no-invented-values-one-commitment-stated-once). That is
+the correct outcome and matches how the commuting matrix already treats them.
+
+The distinction that makes this safe is **blank versus unspecified**. A blank
+`CONACT` on an under-12 means *not asked* — the census does not put them in the
+labour-force universe — and is 20.21% of the population. That blank is a
+legitimate not-working and is kept. Only `99` at 12+ is dropped. Same for
+`ASISTEN`: blank below 3 is not asked; `9` at 3+ is unanswered.
+
+`build_work_status.py` does **not** make this distinction, so
+`MX_work_status_municipio.csv` carries the fabrication. It is one more reason
+that file is superseded.
+
+This is why the built figures sit slightly under `work_status.md`'s headline
+numbers: 498,350 works-and-studies against 498,986, and 793,309 works-only
+against 794,000. The difference is exactly the 1,327 `SITTRA = 9` workers aged
+12-17. `studies only` (10,026,679) and `neither` (1,730,904) match to the person.
+
+### Keyed on residence, and on age
+
+Activity status is a property of the person, assigned before they are given a
+school or a workplace, so it is keyed on **residence** municipio and a per-state
+run is valid.
+
+Bands are narrow where attendance moves fast and wide where nothing changes:
+
+```
+3   4   5   6-11   12-14   15-17   18-29   30-49   50-64   65+
+```
+
+Single years at 3, 4 and 5 are not fussiness — attendance goes 25.0% -> 69.4% ->
+89.6% across those two years, the steepest movement anywhere in the table. A
+single `3-5` band would put a three-year-old and a five-year-old on the same
+70% draw and be wrong about both.
+
+| band | attends | n |
+|---|---|---|
+| 3 | 25.0% | 2,104,791 |
+| 4 | 69.4% | 2,195,606 |
+| 5 | 89.6% | 2,197,616 |
+| 6-11 | **94.3%** | 13,055,486 |
+| 12-14 | 89.5% | 6,567,311 |
+| 15-17 | **71.7%** | 6,481,931 |
+| 18-29 | 22.0% | 24,601,498 |
+| 30-49 | 1.8% | 34,550,654 |
+| 50-64 | 0.5% | 17,517,456 |
+| 65+ | 0.2% | 10,393,656 |
+
+Attendance plateaus at 94.3% through primary, erodes from 12, and collapses
+through adolescence: 78.0% at 15, 71.2% at 16, 66.2% at 17, 50.4% at 18. The
+15-17 band is where a school system stops being universal, which is exactly the
+band where working while studying appears.
+
+There is no row below 3, because `ASISTEN` is not asked below 3. The consuming
+config must filter on `age >= 3` for that reason — and because the engine's
+categorical filter **skips** null values rather than rejecting them
+(`may/attribute_assignment/assigner.py:352`), so a two-year-old with no
+`activity_status` would otherwise pass a `values: [...]` filter and be given a
+school place.
+
+## 4. Transformation
+
+```
+key    = ("MX" + ENT + MUN, "male" | "female", age band)
+status = student | student_employee | student_own_account
+       | employee | own_account | inactive
+```
+
+Accumulate `FACTOR`, emit one row per key.
+
+### Output schema
+
+```
+geo_unit,Sex,age_band,Total,student,student_employee,student_own_account,employee,own_account,inactive
+MX01001,female,12-14,25891,24139,37,426,0,60,1229
+MX01001,female,15-17,27597,20191,538,1055,1203,608,4002
+```
+
+## 5. Validation
+
+49,276 rows over **2,466** municipios. `Total` equals the status sum in **every**
+row.
+
+The three absentees are `MX04012`, `MX07125` and `MX29048` — dropped, not
+missing, because the microdata has no measured status for anyone living there
+(above). That 2,466 is the same count as the school commuting matrix's origins,
+which is the check that the two files agree about which municipios the long form
+can speak for.
+
+| status | weighted (3+) | share |
+|---|---|---|
+| inactive | 36,449,440 | 30.57% |
+| employee | 32,663,871 | 27.39% |
+| student | 30,600,984 | 25.66% |
+| own_account | 17,115,428 | 14.35% |
+| **student_employee** | **1,556,940** | 1.31% |
+| **student_own_account** | **859,757** | 0.72% |
+
+2,416,697 people hold both a school place and a job — 2.0% of the 3+ population,
+and the state the old file could not represent at all.
+
+The 12-17 cross-check against `work_status.md`:
+
+| | this file | work_status.md |
+|---|---|---|
+| works and studies | 498,350 | 498,986 |
+| works only | 793,131 | 794,000 |
+| studies only | 10,023,110 | 10,026,679 |
+| neither | 1,707,144 | 1,730,904 |
+| share of working 12-17s who study | **38.6%** | **38.6%** |
+
+The headline share is identical. The small differences are the dropped
+unspecified answers, and they are the point rather than noise: `work_status.md`
+counts people it never measured.
+
+### The world build
+
+`python3 create_world.py --config configs/Mexico_2020/config.yaml`, exit 0.
+Aguascalientes (`MX01`), 1,425,607 people, which **does not generalise** — see
+[README.md](README.md).
+
+```
+activity_status    1,351,636 assigned, 0 failed   (73,971 filtered: under 3)
+  employee               448,472 (33.18%)   student              363,337 (26.88%)
+  inactive               351,870 (26.03%)   own_account          144,668 (10.70%)
+  student_employee        29,628 ( 2.19%)   student_own_account   13,661 ( 1.01%)
+```
+
+Every state reproduces the source table for `MX01` to within about 1% — the
+residual is sampling in the draw:
+
+| | source | assigned |
+|---|---|---|
+| employee | 443,339 | 448,472 |
+| student | 367,769 | 363,337 |
+| inactive | 349,038 | 351,870 |
+| own_account | 143,147 | 144,668 |
+| student_employee | 29,374 | 29,628 |
+| student_own_account | 13,690 | 13,661 |
+
+**The gating is exact, and this is the check that matters.** Downstream steps
+filter on this attribute, and the totals fall out to the person:
+
+```
+students  363,337 + 29,628 + 13,661           = 406,626 = school_location assigned
+workers   448,472 + 144,668 + 29,628 + 13,661 = 636,429 = workplace_location assigned
+```
+
+The **43,289 student-workers appear in both totals**. They hold a school place
+*and* a job, which is the state the old binary could not represent and which
+England's chain forbids by convention. 28,875 of the 29,628 `student_employee`
+(97.5%) went on to take a real DENUE establishment through
+`student_job_distributor`, on the `part_time_work` activity key, while keeping
+school as their primary activity.
+
+Note the adult employee count fell from 477,060 under `work_status` to 448,472
+here. That is not a regression: it is precisely the `student_employee` people
+leaving `company_distributor`'s eligible set for the part-time chain.
+
+Assigned totals are unchanged by the unspecified-drop above (1,351,636 either
+way), because the table's counts are consumed as weights and the engine
+normalises: dropping unmeasured people moves the *shares*, not the number of
+people given a status. What it changes is which municipios exist at all —
+Aguascalientes contains none of the three dropped, so a national run is where
+that failure would surface.
+
+## 6. Limitations
+
+**Hours are not carried.** `HORTRA` says a working student does 15 hours and a
+working non-student 45. The status is a binary where the data is continuous, and
+15 hours in a shop is not the exposure that 45 is. The column to weight contact
+intensity exists and is not used.
+
+**No level of study.** The census records attainment (`NIVACAD`), not the level
+currently attended, so `student` is one undifferentiated state from preschool to
+postgraduate. See [schools.md](schools.md).
+
+**`student` above 30 is thin but real.** 1.8% at 30-49 and 0.2% at 65+. These are
+kept rather than floored, because they are what the census measured, and the
+`superior` venue file has 5.35M places to accommodate the adults among them.
